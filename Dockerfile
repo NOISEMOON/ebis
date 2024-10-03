@@ -13,6 +13,7 @@ ENV poll_interval=1800
 ENV freshrss_auth_url=
 ENV freshrss_list_subscription_url=
 ENV freshrss_content_url_prefix=
+ENV freshrss_filtered_label=
 ENV sender_email=
 ENV sender_auth_token=
 ENV smtp_server=

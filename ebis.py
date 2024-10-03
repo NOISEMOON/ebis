@@ -1,3 +1,4 @@
+import copy
 import random
 import requests
 import json
@@ -24,6 +25,7 @@ google_base_url = "https://translate.googleapis.com/translate_a/single"
 freshrss_auth_url = os.getenv("freshrss_auth_url")
 freshrss_list_subscription_url = os.getenv("freshrss_list_subscription_url")
 freshrss_content_url_prefix = os.getenv("freshrss_content_url_prefix")
+freshrss_filtered_label = os.getenv("freshrss_filtered_label")
 sender_email = os.getenv("sender_email")
 sender_auth_token = os.getenv("sender_auth_token")
 smtp_server = os.getenv("smtp_server")
@@ -34,6 +36,7 @@ logger.info(f"default_ot: {default_ot}")
 ot_map_json = os.getenv("ot_map_json", "{}")
 logger.info(ot_map_json)
 ot_map = json.loads(ot_map_json)
+new_ot_map = copy.deepcopy(ot_map)
 
 
 class EmailSender:
@@ -67,8 +70,10 @@ class EmailSender:
             # 发送邮件
             self.server.sendmail(sender_email, receiver_email, msg.as_string())
             logger.info(f"Email sent to {receiver_email} successfully!")
+            return True
         except Exception as e:
             logger.exception(f"Failed to send email to {receiver_email}")
+            return False
 
     def disconnect(self):
         # 关闭与SMTP服务器的连接
@@ -126,8 +131,12 @@ def rss_list_sub(auth_token):
             items = data["subscriptions"]
             for item in items:
                 for category in item["categories"]:
-                    if category["label"] == "EN":
-                        en_sub.append(item)
+                    if (
+                        freshrss_filtered_label
+                        and category["label"] != freshrss_filtered_label
+                    ):
+                        continue
+                    en_sub.append(item)
             return en_sub
         except Exception as e:
             logger.exception(f"response.text: {response.text}")
@@ -147,7 +156,6 @@ def rss_fetch_feed(feed_id, feed_title, auth_token):
     content = f"<h1>{feed_title}</h1>\n"
 
     if response.status_code == 200:
-        # 将返回的 JSON 字符串解析为 Python 对象
         data = json.loads(response.text)
         items = data.get("items", [])
         if items:
@@ -155,7 +163,7 @@ def rss_fetch_feed(feed_id, feed_title, auth_token):
             if crawl_time_msec:
                 # 记录下一次请求开始的时间点
                 crawl_time_sec = int(int(crawl_time_msec) / 1000)
-                ot_map[feed_id] = crawl_time_sec + 1
+                new_ot_map[feed_id] = crawl_time_sec + 1
             for item in items:
                 title = item.get("title")
                 if title:
@@ -182,31 +190,36 @@ def build_mail_body(auth_token):
             body += "\n"
         else:
             logger.info(f"No updates from {feed_id} {feed_title}")
-    logger.info(f"Update ot_map: {ot_map}")
     return body
 
 
-def run_loop():
-    logger.info("Start loop...")
-    auth_token = rss_auth()
-    email_sender = EmailSender(smtp_server, smtp_port, sender_email, sender_auth_token)
-
-    while True:
-        try:
-            email_sender.connect()
-            body = build_mail_body(auth_token)
-            if body:
-                subject = "RSS " + datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                email_sender.send_email(sender_email, receiver_email, subject, body)
-            else:
-                logger.info("No updates. Don't send email")
-        except Exception as e:
-            logger.exception("build_mail_body error")
-        sleep(poll_interval)
-
-
 if __name__ == "__main__":
+    logger.info("Start loop...")
     try:
-        run_loop()
+        auth_token = rss_auth()
+        email_sender = EmailSender(
+            smtp_server, smtp_port, sender_email, sender_auth_token
+        )
+
+        while True:
+            try:
+                body = build_mail_body(auth_token)
+                if body:
+                    subject = "RSS " + datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+                    email_sender.connect()
+                    is_sent = email_sender.send_email(
+                        sender_email, receiver_email, subject, body
+                    )
+                    if is_sent:
+                        logger.info(f"Update ot_map: {ot_map}")
+                        logger.info(f"Update new_ot_map: {new_ot_map}")
+                        ot_map = copy.deepcopy(new_ot_map)
+                else:
+                    logger.info("No updates. Don't send email")
+            except Exception as e:
+                logger.exception("build_mail_body error")
+            sleep(poll_interval)
     except Exception as e:
-        logger.exception("run loop error")
+        logger.exception("Exit with error")
+        exit
